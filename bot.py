@@ -114,7 +114,7 @@ def get_gecmis(cid, limit=10):
 def api_call(endpoint, params=None):
     try:
         p = dict(params or {})
-        p["timezone"] = TZ  # Turkiye saatine gore
+        p["timezone"] = TZ
         r = requests.get(f"{API_BASKETBALL_BASE}/{endpoint}",
                          headers=API_HEADERS, params=p, timeout=20)
         if r.status_code != 200:
@@ -155,24 +155,30 @@ def _abd_mi(g):
         return False
 
 def bugunun_maclari_al():
+    """Son 2 gun + bugun + sonraki 2 gun toplam 5 gunu tarar."""
     tr_now = datetime.utcnow() + timedelta(hours=3)
-    bugun = tr_now.strftime("%Y-%m-%d")
-    yarin = (tr_now + timedelta(days=1)).strftime("%Y-%m-%d")
+    tarihler = []
+    for offset in [-2, -1, 0, 1, 2]:
+        t = (tr_now + timedelta(days=offset)).strftime("%Y-%m-%d")
+        tarihler.append(t)
 
-    print(f"TR tarih: {bugun} | UTC: {datetime.utcnow().strftime('%Y-%m-%d %H:%M')}", flush=True)
+    print(f"TR: {tr_now.strftime('%Y-%m-%d %H:%M')} | Taranan: {tarihler}", flush=True)
 
     maclar = []
-    for tarih in [bugun, yarin]:
+    for tarih in tarihler:
         r = api_call("games", {"date": tarih})
         if not r:
+            print(f"  ❌ {tarih} -> API hata", flush=True)
             continue
+        n = len(r.get("response", []))
+        print(f"  📅 {tarih} -> {n} maç", flush=True)
         for g in r.get("response", []):
             try:
                 if _abd_mi(g):
                     maclar.append(g)
             except: continue
 
-    print(f"Bulunan ABD mac: {len(maclar)}", flush=True)
+    print(f"✅ Toplam ABD mac: {len(maclar)}", flush=True)
     return maclar
 
 def mac_istatistik_al(game_id):
@@ -427,20 +433,20 @@ def check_rate_limit(cid):
 # ANALIZ AKISI
 # ==========================================
 def analiz_yap(cid):
-    send_msg(cid, "🏀 ABD basketbol maçları taranıyor...")
+    send_msg(cid, "🏀 ABD basketbol maçları taranıyor... (5 gün)")
 
     maclar = bugunun_maclari_al()
     toplam = len(maclar)
 
     if toplam == 0:
         tr_now = datetime.utcnow() + timedelta(hours=3)
-        send_msg(cid, f"❌ Şu an ABD basketbol maçı bulunamadı.\n"
+        send_msg(cid, f"❌ 5 günlük taramada ABD basketbol maçı bulunamadı.\n"
                       f"📅 Tarih: {tr_now.strftime('%d.%m.%Y %H:%M')} (TSİ)\n"
                       f"💡 /debug yazıp detay görebilirsin.")
         return
 
     if toplam < MIN_TARANAN:
-        send_msg(cid, f"ℹ️ Bugün sadece {toplam} maç var. Yine de analiz ediyorum...")
+        send_msg(cid, f"ℹ️ Toplam {toplam} maç var. Yine de analiz ediyorum...")
 
     secilenler = maclar[:MAX_TARANAN]
 
@@ -490,7 +496,7 @@ def analiz_yap(cid):
             continue
 
     if len(adaylar) < 1:
-        send_msg(cid, "❌ Bugün ALT şartını geçen maç bulunamadı.")
+        send_msg(cid, "❌ ALT şartını geçen maç bulunamadı.")
         return
 
     adaylar.sort(key=lambda x: x["analiz"]["olasilik"], reverse=True)
@@ -537,75 +543,64 @@ def analiz_yap(cid):
     send_msg(cid, metin, "Markdown", rm)
 
 # ==========================================
-# DEBUG - DETAYLI RAPOR
+# DEBUG
 # ==========================================
 def debug_basket(cid):
     tr_now = datetime.utcnow() + timedelta(hours=3)
     utc_now = datetime.utcnow()
-    bugun_tr = tr_now.strftime("%Y-%m-%d")
-    bugun_utc = utc_now.strftime("%Y-%m-%d")
 
     lines = [
-        "🔧 *DEBUG RAPORU*",
+        "🔧 *DEBUG RAPORU v5*",
         "",
         f"UTC: `{utc_now.strftime('%d.%m.%Y %H:%M')}`",
         f"TR: `{tr_now.strftime('%d.%m.%Y %H:%M')}`",
-        f"TR tarih: `{bugun_tr}`",
-        f"UTC tarih: `{bugun_utc}`",
         "",
+        "📅 *5 Günlük Tarama:*",
     ]
 
-    # Test 1: TR tarihi
-    send_msg(cid, "📡 Test 1/4: TR tarihi sorgulanıyor...")
-    r1 = api_call("games", {"date": bugun_tr})
-    if r1:
-        n1 = len(r1.get("response", []))
-        lines.append(f"📊 TR tarih → *{n1}* maç")
-    else:
-        lines.append("❌ TR tarih → API hata")
+    toplam_mac = 0
+    tarihler = []
+    for offset in [-2, -1, 0, 1, 2]:
+        t = (tr_now + timedelta(days=offset)).strftime("%Y-%m-%d")
+        tarihler.append(t)
 
-    # Test 2: UTC tarihi
-    send_msg(cid, "📡 Test 2/4: UTC tarihi sorgulanıyor...")
-    r2 = api_call("games", {"date": bugun_utc})
-    if r2:
-        n2 = len(r2.get("response", []))
-        lines.append(f"📊 UTC tarih → *{n2}* maç")
-    else:
-        lines.append("❌ UTC tarih → API hata")
+    for tarih in tarihler:
+        r = api_call("games", {"date": tarih})
+        if r:
+            n = len(r.get("response", []))
+            toplam_mac += n
+            lines.append(f"• `{tarih}` → *{n}* maç")
+        else:
+            lines.append(f"• `{tarih}` → ❌ hata")
 
-    # Test 3: Filtresiz örnek
-    send_msg(cid, "📡 Test 3/4: Maç örnekleri alınıyor...")
-    if r1 and r1.get("response"):
-        lines.append("")
-        lines.append("🔍 *İlk 5 maç (filtresiz):*")
-        for g in r1["response"][:5]:
+    lines.append("")
+    lines.append(f"📊 *Toplam ham maç: {toplam_mac}*")
+
+    # ABD filtresi
+    send_msg(cid, "\n".join(lines), "Markdown")
+
+    # ABD filtresi testi
+    send_msg(cid, "🔍 ABD filtresi uygulanıyor...")
+    maclar = bugunun_maclari_al()
+    lines2 = [f"✅ *ABD filtresi → {len(maclar)} maç*", ""]
+    if maclar:
+        lines2.append("🔍 *İlk 5 ABD maçı:*")
+        for g in maclar[:5]:
             try:
                 lig = g.get("league", {}).get("name", "?")
-                ulke = ""
-                c = g.get("country")
-                if isinstance(c, dict):
-                    ulke = c.get("name", "")
-                elif isinstance(c, str):
-                    ulke = c
-                elif isinstance(g.get("league", {}).get("country"), str):
-                    ulke = g["league"]["country"]
-                elif isinstance(g.get("league", {}).get("country"), dict):
-                    ulke = g["league"]["country"].get("name", "")
                 ev = g.get("teams", {}).get("home", {}).get("name", "?")
                 dep = g.get("teams", {}).get("away", {}).get("name", "?")
-                lines.append(f"• {lig} [{ulke}]")
-                lines.append(f"  {ev} vs {dep}")
+                tarih = g.get("date", "")[:16].replace("T", " ")
+                lines2.append(f"• {lig}")
+                lines2.append(f"  {ev} vs {dep}")
+                lines2.append(f"  {tarih}")
             except: continue
+    else:
+        lines2.append("❌ Hiç ABD maçı bulunamadı")
+        lines2.append("")
+        lines2.append("💡 API free plan NBA preseason'i kapsamıyor olabilir.")
 
-    # Test 4: ABD filtresi
-    send_msg(cid, "📡 Test 4/4: ABD filtresi uygulanıyor...")
-    abd_tr = []
-    if r1 and r1.get("response"):
-        abd_tr = [g for g in r1["response"] if _abd_mi(g)]
-    lines.append("")
-    lines.append(f"✅ ABD filtresi (TR) → *{len(abd_tr)}* maç")
-
-    send_msg(cid, "\n".join(lines), "Markdown")
+    send_msg(cid, "\n".join(lines2), "Markdown")
 
 # ==========================================
 # MENU
@@ -622,9 +617,9 @@ def _menu_keyboard():
     ]}
 
 def _menu_text():
-    return ("🏀 *ABD BASKETBOL ALT BOTU*\n\n"
+    return ("🏀 *ABD BASKETBOL ALT BOTU v5*\n\n"
             "🎯 Sadece ALT (under) bahisleri\n"
-            "📊 3-8 maç analiz eder\n"
+            "📊 5 gün tarama (dün + bugün + yarın)\n"
             "🔍 Sakatlık + Puan + H2H + İstatistik\n"
             "🧠 Gemini 3.1 Pro analizi\n\n"
             "⬇️ Analiz için butona bas:")
@@ -647,11 +642,11 @@ def show_gecmis(cid, mid=None):
     else: send_msg(cid, text, None, _ana_menu_buton())
 
 def show_yardim(cid, mid=None):
-    text = ("❓ YARDIM\n\n"
-            "🏀 Sadece ABD basketbol (NBA/WNBA/NCAA)\n"
+    text = ("❓ YARDIM - v5\n\n"
+            "🏀 Sadece ABD basketbol\n"
             "🎯 Sadece ALT bahisleri\n"
-            "📊 3-8 maç analiz eder\n"
-            "🔍 Sakatlık + Puan + H2H + İstatistik\n"
+            "📊 5 gün tarama yapar\n"
+            "🔍 Sakatlık + Puan + H2H\n"
             "🧠 Gemini 3.1 Pro\n\n"
             "💡 NBA sezonu Ekim-Haziran\n"
             "🕐 Maçlar gece 02:00-05:00 TSİ'de\n\n"
@@ -720,7 +715,7 @@ def handle_callback(cq):
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
     init_db()
-    print("=== ABD BASKETBOL ALT BOTU v4 BASLADI ===", flush=True)
+    print("=== ABD BASKETBOL ALT BOTU v5 (5 GUN) BASLADI ===", flush=True)
     print(f"Timezone: {TZ}", flush=True)
     print(f"API-Basketball: {'VAR' if API_BASKETBALL_KEY else 'YOK'}", flush=True)
     print(f"Gemini: {'VAR' if GEMINI_API_KEY else 'YOK'}", flush=True)
