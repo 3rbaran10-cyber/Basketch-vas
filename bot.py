@@ -15,6 +15,7 @@ GEMINI_URL = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_M
 
 API_BASKETBALL_BASE = "https://v1.basketball.api-sports.io"
 API_HEADERS = {"x-apisports-key": API_BASKETBALL_KEY}
+TZ = "Europe/Istanbul"
 
 ADMIN_ID = 5504006147
 
@@ -112,8 +113,10 @@ def get_gecmis(cid, limit=10):
 # ==========================================
 def api_call(endpoint, params=None):
     try:
+        p = dict(params or {})
+        p["timezone"] = TZ  # Turkiye saatine gore
         r = requests.get(f"{API_BASKETBALL_BASE}/{endpoint}",
-                         headers=API_HEADERS, params=params or {}, timeout=20)
+                         headers=API_HEADERS, params=p, timeout=20)
         if r.status_code != 200:
             print(f"API hatasi: {r.status_code} - {r.text[:200]}", flush=True)
             return None
@@ -141,7 +144,7 @@ def _abd_mi(g):
             league_name = g["league"].get("name", "")
 
         us_terms = ["usa", "united states", "us"]
-        league_terms = ["nba", "wnba", "ncaa", "g-league", "gleague", "summer league"]
+        league_terms = ["nba", "wnba", "ncaa", "g-league", "gleague", "summer league", "preseason"]
 
         if country.lower() in us_terms:
             return True
@@ -717,7 +720,8 @@ def handle_callback(cq):
 def main():
     threading.Thread(target=run_health_server, daemon=True).start()
     init_db()
-    print("=== ABD BASKETBOL ALT BOTU v3 BASLADI ===", flush=True)
+    print("=== ABD BASKETBOL ALT BOTU v4 BASLADI ===", flush=True)
+    print(f"Timezone: {TZ}", flush=True)
     print(f"API-Basketball: {'VAR' if API_BASKETBALL_KEY else 'YOK'}", flush=True)
     print(f"Gemini: {'VAR' if GEMINI_API_KEY else 'YOK'}", flush=True)
     print(f"Telegram: {'VAR' if TELEGRAM_TOKEN else 'YOK'}", flush=True)
