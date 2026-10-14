@@ -28,18 +28,15 @@ GEMINI_LOCK = threading.Lock()
 SON_ISTEK_ZAMANI = [0.0]
 MIN_ISTEK_ARASI = 3.0
 
-# ESPN rate limit
 _ESPN_LOCK = threading.Lock()
 _SON_ESPN = [0.0]
 _ESPN_MIN_ARASI = 0.4
 
-# Emniyet marji
 EMNIYET_MARJI = 10
 
-# Cache
 _CACHE = {}
 _CACHE_TTL = 300
-_CACHE_MISS = object()  # sentinel
+_CACHE_MISS = object()
 
 def _cache_get(key):
     now = time.time()
@@ -58,7 +55,7 @@ MIN_TARANAN = 3
 MAX_TARANAN = 8
 AYNI_MAC_ENGELLE_DK = 30
 
-SONUC_KONTROL_ARASI = 120  # 2 dk
+SONUC_KONTROL_ARASI = 300  # 5 dk
 
 USER_COOLDOWN = {}
 RATE_LIMIT_SECONDS = 300
@@ -638,7 +635,7 @@ def check_rate_limit(cid):
 # OTOMATIK SONUC
 # ==========================================
 def sonuc_kontrol_worker():
-    print("Sonuc kontrol worker basladi (2 dk aralik)", flush=True)
+    print("Sonuc kontrol worker basladi (5 dk aralik)", flush=True)
     time.sleep(60)
     while True:
         try:
@@ -802,7 +799,7 @@ def _menu_text():
             "🎯 Sadece ALT (under)\n"
             "🛡️ +10 sayı emniyet marjı\n"
             "📊 PPG + PAPG + Pace + Form + B2B\n"
-            "🤖 Otomatik sonuç (2 dk kontrol)\n\n"
+            "🤖 Otomatik sonuç (5 dk kontrol)\n\n"
             "⬇️ Analiz için butona bas:")
 
 def show_menu(cid, mid=None):
@@ -827,7 +824,7 @@ def show_yardim(cid, mid=None):
             "🏀 Yaklaşan ABD basketbol maçları\n"
             "🎯 Sadece ALT bahisleri\n"
             "🛡️ +10 emniyet marjı\n"
-            "🤖 Maç bitince otomatik sonuç (2 dk)\n\n"
+            "🤖 Maç bitince otomatik sonuç (5 dk)\n\n"
             "⚠️ Yatırım tavsiyesi değildir.")
     if mid: edit_message_text(cid, mid, text, None, _ana_menu_buton())
     else: send_msg(cid, text, None, _ana_menu_buton())
