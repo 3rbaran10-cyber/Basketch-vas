@@ -28,14 +28,18 @@ GEMINI_LOCK = threading.Lock()
 SON_ISTEK_ZAMANI = [0.0]
 MIN_ISTEK_ARASI = 3.0
 
-# ESPN rate limit icin
+# ESPN rate limit
 _ESPN_LOCK = threading.Lock()
 _SON_ESPN = [0.0]
-_ESPN_MIN_ARASI = 0.4  # 400ms bekleme
+_ESPN_MIN_ARASI = 0.4
 
-# Cache (5 dk)
+# Emniyet marji
+EMNIYET_MARJI = 10
+
+# Cache
 _CACHE = {}
 _CACHE_TTL = 300
+_CACHE_MISS = object()  # sentinel
 
 def _cache_get(key):
     now = time.time()
@@ -43,7 +47,9 @@ def _cache_get(key):
         val, ts = _CACHE[key]
         if now - ts < _CACHE_TTL:
             return val
-    return None
+        else:
+            del _CACHE[key]
+    return _CACHE_MISS
 
 def _cache_set(key, val):
     _CACHE[key] = (val, time.time())
@@ -51,6 +57,8 @@ def _cache_set(key, val):
 MIN_TARANAN = 3
 MAX_TARANAN = 8
 AYNI_MAC_ENGELLE_DK = 30
+
+SONUC_KONTROL_ARASI = 120  # 2 dk
 
 USER_COOLDOWN = {}
 RATE_LIMIT_SECONDS = 300
@@ -165,10 +173,9 @@ def get_gecmis(cid, limit=10):
     except: return []
 
 # ==========================================
-# ESPN - GUVENLI ISTEK (RATE LIMIT + CACHE)
+# ESPN
 # ==========================================
 def espn_get(url, params=None, timeout=15):
-    """ESPN'e guvenli istek. Rate limit + 0.4sn bekleme."""
     with _ESPN_LOCK:
         gecen = time.time() - _SON_ESPN[0]
         if gecen < _ESPN_MIN_ARASI:
@@ -183,9 +190,8 @@ def espn_get(url, params=None, timeout=15):
             return None
 
 def espn_season_yili():
-    """ESPN sezon yili. NBA 2026-27 icin 2027."""
     simdi = datetime.now()
-    if simdi.month >= 9:  # Eylul-Aralik
+    if simdi.month >= 9:
         return simdi.year + 1
     return simdi.year
 
@@ -195,32 +201,21 @@ def espn_season_yili():
 def takim_sezon_istatistik_al(lig_kod, team_id):
     key = f"stats_{lig_kod}_{team_id}"
     cached = _cache_get(key)
-    if cached is not None:
+    if cached is not _CACHE_MISS:
         return cached
-
     try:
         yil = espn_season_yili()
         url = f"{ESPN_CORE_BASE}/{lig_kod}/seasons/{yil}/types/2/teams/{team_id}/statistics"
         data = espn_get(url)
         if not data:
-            _cache_set(key, None)
-            return None
-
-        sonuc = {
-            "ppg": None, "papg": None, "pace": None,
-            "fg_pct": None, "three_pct": None, "ft_pct": None,
-            "reb": None, "ast": None, "tov": None,
-        }
-
+            _cache_set(key, None); return None
+        sonuc = {"ppg": None, "papg": None, "pace": None, "fg_pct": None}
         splits = data.get("splits", {})
-        cats = splits.get("categories", [])
-
-        for cat in cats:
+        for cat in splits.get("categories", []):
             for s in cat.get("stats", []):
                 name = s.get("name", "")
                 pg = s.get("perGameValue")
                 val = s.get("value")
-
                 if name in ("avgPointsFor", "points"):
                     if pg is not None: sonuc["ppg"] = pg
                 elif name == "avgPointsAgainst":
@@ -229,120 +224,79 @@ def takim_sezon_istatistik_al(lig_kod, team_id):
                     if pg is not None: sonuc["pace"] = pg
                 elif name == "fieldGoalPct":
                     sonuc["fg_pct"] = val
-                elif name == "threePointFieldGoalPct":
-                    sonuc["three_pct"] = val
-                elif name == "freeThrowPct":
-                    sonuc["ft_pct"] = val
-                elif name in ("avgRebounds", "rebounds"):
-                    if pg is not None: sonuc["reb"] = pg
-                elif name in ("avgAssists", "assists"):
-                    if pg is not None: sonuc["ast"] = pg
-                elif name in ("avgTurnovers", "turnovers"):
-                    if pg is not None: sonuc["tov"] = pg
-
         _cache_set(key, sonuc)
         return sonuc
-    except Exception as e:
-        print(f"stats hata: {str(e)[:150]}", flush=True)
-        return None
+    except: return None
 
 def takim_istatistik_ozetle(s, team_name):
-    if not s:
-        return f"{team_name}: sezon istatistigi yok"
+    if not s: return f"{team_name}: sezon istatistigi yok"
     satirlar = [f"{team_name}:"]
-    if s.get("ppg") is not None:
-        satirlar.append(f"  • PPG (attigi): {round(s['ppg'], 1)}")
-    if s.get("papg") is not None:
-        satirlar.append(f"  • PAPG (yedigi): {round(s['papg'], 1)}")
-    if s.get("pace") is not None:
-        satirlar.append(f"  • Pace (tempo): {round(s['pace'], 1)}")
-    if s.get("fg_pct") is not None:
-        satirlar.append(f"  • FG%: {round(s['fg_pct']*100, 1)}")
-    if s.get("three_pct") is not None:
-        satirlar.append(f"  • 3P%: {round(s['three_pct']*100, 1)}")
+    if s.get("ppg") is not None: satirlar.append(f"  • PPG: {round(s['ppg'], 1)}")
+    if s.get("papg") is not None: satirlar.append(f"  • PAPG: {round(s['papg'], 1)}")
+    if s.get("pace") is not None: satirlar.append(f"  • Pace: {round(s['pace'], 1)}")
+    if s.get("fg_pct") is not None: satirlar.append(f"  • FG%: {round(s['fg_pct']*100, 1)}")
     return "\n".join(satirlar)
 
 # ==========================================
-# SCHEDULE - TEK CAGRIDA FORM + B2B
+# SCHEDULE / FORM / B2B
 # ==========================================
 def takim_schedule_al(lig_kod, team_id):
     key = f"sch_{lig_kod}_{team_id}"
     cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
+    if cached is not _CACHE_MISS: return cached
     try:
         url = f"{ESPN_SITE_BASE}/{lig_kod}/teams/{team_id}/schedule"
         data = espn_get(url)
         if not data:
-            _cache_set(key, [])
-            return []
+            _cache_set(key, []); return []
         events = data.get("events", [])
         _cache_set(key, events)
         return events
-    except:
-        return []
+    except: return []
 
 def form_ve_b2b(schedule_events, mac_tarih_iso, limit=5):
-    """Schedule'dan form + back-to-back hesapla (tek gecis)."""
     try:
         mac_tarihi = datetime.fromisoformat(mac_tarih_iso.replace("Z", "+00:00"))
-    except:
-        return [], None
-
+    except: return [], None
     bitmis = []
     onceki_tarihler = []
-
     for ev in schedule_events:
         try:
             ev_tarih_iso = ev.get("date", "")
             ev_tarih = datetime.fromisoformat(ev_tarih_iso.replace("Z", "+00:00"))
-            if ev_tarih >= mac_tarihi:
-                continue
-
+            if ev_tarih >= mac_tarihi: continue
             onceki_tarihler.append(ev_tarih)
-
             comp = ev.get("competitions", [{}])[0]
             state = comp.get("status", {}).get("type", {}).get("state", "")
-            if state != "post":
-                continue
-
+            if state != "post": continue
             competitors = comp.get("competitors", [])
             ev_t = next((c for c in competitors if c.get("homeAway") == "home"), None)
             dep_t = next((c for c in competitors if c.get("homeAway") == "away"), None)
-            if not ev_t or not dep_t:
-                continue
-
-            ev_adi = ev_t.get("team", {}).get("displayName", "?")
-            dep_adi = dep_t.get("team", {}).get("displayName", "?")
+            if not ev_t or not dep_t: continue
             ev_skor = int(ev_t.get("score", 0) or 0)
             dep_skor = int(dep_t.get("score", 0) or 0)
-
             bitmis.append({
                 "tarih": ev_tarih_iso[:10],
-                "ev": ev_adi, "dep": dep_adi,
+                "ev": ev_t.get("team", {}).get("displayName", "?"),
+                "dep": dep_t.get("team", {}).get("displayName", "?"),
                 "ev_skor": ev_skor, "dep_skor": dep_skor,
                 "toplam": ev_skor + dep_skor,
             })
         except: continue
-
     bitmis.sort(key=lambda x: x["tarih"], reverse=True)
     bitmis = bitmis[:limit]
-
     b2b = None
     if onceki_tarihler:
         onceki_tarihler.sort(reverse=True)
         b2b = (mac_tarihi - onceki_tarihler[0]).days
-
     return bitmis, b2b
 
 def form_ozetle(maclar, team_name):
-    if not maclar:
-        return f"{team_name}: son mac yok"
+    if not maclar: return f"{team_name}: son mac yok"
     satirlar = [f"{team_name} son {len(maclar)} mac:"]
     toplamlar = []
     for m in maclar:
-        satirlar.append(f"  • {m['tarih']}: {m['ev']} {m['ev_skor']}-{m['dep_skor']} {m['dep']} (TOP: {m['toplam']})")
+        satirlar.append(f"  • {m['tarih']}: TOP {m['toplam']}")
         toplamlar.append(m["toplam"])
     if toplamlar:
         ort = sum(toplamlar) / len(toplamlar)
@@ -350,46 +304,34 @@ def form_ozetle(maclar, team_name):
     return "\n".join(satirlar)
 
 def b2b_ozetle(gun, team_name):
-    if gun is None:
-        return f"{team_name}: dinlenme bilgisi yok"
-    if gun == 0:
-        return f"⚠️ {team_name}: BACK-TO-BACK"
-    elif gun == 1:
-        return f"{team_name}: 1 gun dinlenme (yorgun)"
-    elif gun >= 3:
-        return f"{team_name}: {gun} gun (iyi)"
+    if gun is None: return f"{team_name}: bilinmiyor"
+    if gun == 0: return f"⚠️ {team_name}: BACK-TO-BACK"
+    elif gun == 1: return f"{team_name}: 1 gun (yorgun)"
+    elif gun >= 3: return f"{team_name}: {gun} gun (iyi)"
     return f"{team_name}: {gun} gun"
 
 # ==========================================
-# EV/DEPLASMAN PERFORMANS
+# EV/DEPLASMAN
 # ==========================================
 def ev_deplasman_performans(lig_kod, team_id, ev_mi=True):
     key = f"perf_{lig_kod}_{team_id}_{ev_mi}"
     cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
+    if cached is not _CACHE_MISS: return cached
     try:
         yil = espn_season_yili()
         url = f"{ESPN_CORE_BASE}/{lig_kod}/seasons/{yil}/types/2/teams/{team_id}/record"
         data = espn_get(url)
         if not data:
-            _cache_set(key, None)
-            return None
-
-        items = data.get("items", [])
-        for it in items:
+            _cache_set(key, None); return None
+        for it in data.get("items", []):
             rec_type = it.get("type", "")
             if ev_mi and rec_type == "home":
-                sonuc = it.get("summary", "")
-                _cache_set(key, sonuc)
-                return sonuc
+                s = it.get("summary", "")
+                _cache_set(key, s); return s
             if not ev_mi and rec_type == "road":
-                sonuc = it.get("summary", "")
-                _cache_set(key, sonuc)
-                return sonuc
-        _cache_set(key, None)
-        return None
+                s = it.get("summary", "")
+                _cache_set(key, s); return s
+        _cache_set(key, None); return None
     except: return None
 
 # ==========================================
@@ -398,27 +340,23 @@ def ev_deplasman_performans(lig_kod, team_id, ev_mi=True):
 def takim_sakatliklari_al(lig_kod):
     key = f"inj_{lig_kod}"
     cached = _cache_get(key)
-    if cached is not None:
-        return cached
-
+    if cached is not _CACHE_MISS: return cached
     try:
         url = f"{ESPN_SITE_BASE}/{lig_kod}/injuries"
         data = espn_get(url)
         if not data:
-            _cache_set(key, {})
-            return {}
+            _cache_set(key, {}); return {}
         inj_map = {}
         for team in data.get("injuries", []):
             team_name = team.get("displayName", "")
             injuries = team.get("injuries", [])
-            if injuries:
-                inj_map[team_name] = injuries
+            if injuries: inj_map[team_name] = injuries
         _cache_set(key, inj_map)
         return inj_map
     except: return {}
 
 # ==========================================
-# SCOREBOARD / MAC PARSE
+# MAC PARSE
 # ==========================================
 def _mac_parse(event, lig_adi):
     try:
@@ -427,9 +365,7 @@ def _mac_parse(event, lig_adi):
         home = next((c for c in competitors if c.get("homeAway") == "home"), None)
         away = next((c for c in competitors if c.get("homeAway") == "away"), None)
         if not home or not away: return None
-
         durum_state = comp.get("status", {}).get("type", {}).get("state", "pre")
-
         odds = comp.get("odds", [])
         odds_metni = ""
         if odds:
@@ -437,12 +373,9 @@ def _mac_parse(event, lig_adi):
             ou = o.get("overUnder")
             detay = o.get("details", "")
             odds_metni = f"O/U: {ou} | Spread: {detay}" if ou else detay
-        if not odds_metni:
-            odds_metni = "Odds bilgisi yok"
-
+        if not odds_metni: odds_metni = "Odds bilgisi yok"
         return {
-            "lig": lig_adi,
-            "event_id": event.get("id", ""),
+            "lig": lig_adi, "event_id": event.get("id", ""),
             "ev_id": home.get("team", {}).get("id", ""),
             "dep_id": away.get("team", {}).get("id", ""),
             "ev": home.get("team", {}).get("displayName", "?"),
@@ -455,9 +388,7 @@ def _mac_parse(event, lig_adi):
             "odds": odds_metni,
             "venue": comp.get("venue", {}).get("fullName", ""),
         }
-    except Exception as e:
-        print(f"mac_parse hata: {e}", flush=True)
-        return None
+    except: return None
 
 def bugunun_maclari_al():
     tr_now = datetime.now(timezone.utc) + timedelta(hours=3)
@@ -465,7 +396,6 @@ def bugunun_maclari_al():
     for offset in [0, 1]:
         t = (tr_now + timedelta(days=offset)).strftime("%Y%m%d")
         tarihler.append(t)
-
     maclar = []
     for lig_adi, lig_kod in ESPN_LEAGUES.items():
         for tarih in tarihler:
@@ -475,28 +405,21 @@ def bugunun_maclari_al():
                 parsed = _mac_parse(ev, lig_adi)
                 if parsed and parsed["durum_state"] == "pre":
                     maclar.append(parsed)
-
     maclar.sort(key=lambda x: x.get("tarih", ""))
-    print(f"Yaklasan mac: {len(maclar)}", flush=True)
     return maclar
 
 def mac_final_mi(lig_kod, event_id):
     try:
         data = espn_get(f"{ESPN_WEB_BASE}/{lig_kod}/summary", {"event": event_id})
         if not data: return None
-        header = data.get("header", {})
-        comp = header.get("competitions", [{}])[0]
+        comp = data.get("header", {}).get("competitions", [{}])[0]
         state = comp.get("status", {}).get("type", {}).get("state", "")
         if state != "post": return None
-
         competitors = comp.get("competitors", [])
         home = next((c for c in competitors if c.get("homeAway") == "home"), None)
         away = next((c for c in competitors if c.get("homeAway") == "away"), None)
         if not home or not away: return None
-
-        ev_skor = int(home.get("score", 0) or 0)
-        dep_skor = int(away.get("score", 0) or 0)
-        return ev_skor + dep_skor
+        return int(home.get("score", 0) or 0) + int(away.get("score", 0) or 0)
     except: return None
 
 def tercih_tuttumu(tercih, toplam_sayi):
@@ -505,8 +428,20 @@ def tercih_tuttumu(tercih, toplam_sayi):
         temiz = tercih.upper().replace("ALT", "").strip()
         cizgi = float(temiz)
         return toplam_sayi < cizgi
-    except:
-        return None
+    except: return None
+
+# ==========================================
+# EMNIYET MARJI
+# ==========================================
+def emniyet_marji_uygula(tercih, marj):
+    if not tercih or "ALT" not in tercih.upper():
+        return tercih
+    try:
+        temiz = tercih.upper().replace("ALT", "").strip()
+        sayi = float(temiz)
+        yeni = sayi + marj
+        return f"{yeni} ALT"
+    except: return tercih
 
 # ==========================================
 # GEMINI
@@ -522,7 +457,7 @@ def gemini_istek_at(payload):
         SON_ISTEK_ZAMANI[0] = time.time()
         return resp
 
-MAC_PROMPT = """Sen ABD basketbol (NBA, WNBA, NCAA) analiz uzmanisin. 15+ yillik deneyimli profesyonelsin. Sezon basinda oldugumuz icin sezon ortalamalarina degil, SON MACLARA ve BACK-TO-BACK durumuna daha fazla agirlik ver.
+MAC_PROMPT = """Sen ABD basketbol (NBA, WNBA, NCAA) analiz uzmanisin. 15+ yillik deneyimli profesyonelsin.
 
 === MAC BILGILERI ===
 Lig: {lig}
@@ -564,23 +499,23 @@ SADECE SU TERCİHLERDEN BIRINI SEÇ:
 - X.5 ALT (ornek: 220.5 ALT, 235.5 ALT)
 
 ALT ICIN ARANAN SARTLAR:
-1. PPG/PAPG ortalamasi dusuk mu? (PPG+PAPG toplami < 220 ideal)
-2. Savunma guclu mu (PAPG < 110)?
+1. PPG/PAPG ortalamasi dusuk mu?
+2. Savunma guclu mu?
 3. Sakat oyuncular var mi?
 4. H2H'de ALT orani yuksek mi?
-5. Takimlar back-to-back veya yorgun mu?
+5. Takimlar back-to-back mi?
 6. Mac onemsiz mi (preseason)?
-7. Tempo (Pace) dusuk mu? (< 100 ideal)
+7. Tempo (Pace) dusuk mu?
 
 KARAR:
-- 4+ sart -> "X.5 ALT" ver
-- 2-3 sart -> "BEKLE"
+- 4+ sart uyuyorsa -> "X.5 ALT" ver
+- 2-3 sart uyuyorsa -> "BEKLE" ver
 - 2'den az -> "BEKLE"
 
 ONEMLI:
-- SADECE ALT tercihi, UST ASLA VERME
+- SADECE ALT tercihi ver, UST ASLA VERME
 - Toplam sayi cizgisi SEN belirle
-- PPG ve PAPG verilerini kullan
+- Gercekci bir cizgi sec
 - Gerekce 2-3 cumle
 - Olasilik %55-95
 
@@ -681,12 +616,6 @@ def send_msg(cid, text, parse_mode=None, reply_markup=None):
     except Exception as e:
         print(f"send_msg: {e}", flush=True); return None
 
-def edit_reply_markup(cid, mid, rm=None):
-    try:
-        requests.post(f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/editMessageReplyMarkup",
-                      json={"chat_id": cid, "message_id": mid, "reply_markup": rm or {"inline_keyboard": []}}, timeout=10)
-    except: pass
-
 def edit_message_text(cid, mid, text, pm=None, rm=None):
     try:
         p = {"chat_id": cid, "message_id": mid, "text": text}
@@ -706,10 +635,10 @@ def check_rate_limit(cid):
     return True
 
 # ==========================================
-# OTOMATIK SONUC WORKER
+# OTOMATIK SONUC
 # ==========================================
 def sonuc_kontrol_worker():
-    print("Sonuc kontrol worker basladi", flush=True)
+    print("Sonuc kontrol worker basladi (2 dk aralik)", flush=True)
     time.sleep(60)
     while True:
         try:
@@ -738,7 +667,7 @@ def sonuc_kontrol_worker():
                     print(f"Kupon kontrol hatasi: {str(e)[:150]}", flush=True)
         except Exception as e:
             print(f"Worker hatasi: {str(e)[:150]}", flush=True)
-        time.sleep(300)
+        time.sleep(SONUC_KONTROL_ARASI)
 
 # ==========================================
 # ANALIZ AKISI
@@ -750,19 +679,15 @@ def analiz_yap(cid):
     if toplam == 0:
         send_msg(cid, "❌ Yaklaşan ABD basketbol maçı bulunamadı.")
         return
-
     onerilen_idler = son_onekli_event_idleri()
     if onerilen_idler:
         maclar = [m for m in maclar if m["event_id"] not in onerilen_idler]
-
     if len(maclar) == 0:
         send_msg(cid, "❌ Tüm yaklaşan maçlar son 30 dk içinde önerildi.")
         return
-
     secilenler = maclar[:MAX_TARANAN]
-    send_msg(cid, f"📊 {toplam} yaklaşan maç var. {len(secilenler)} tanesi derin analiz ediliyor... (4-6 dk)")
+    send_msg(cid, f"📊 {toplam} yaklaşan maç var. {len(secilenler)} tanesi analiz ediliyor... (4-6 dk)")
 
-    # Sakatliklari toplu cek (cached)
     tum_sakatliklar = {}
     for lig_kod in ESPN_LEAGUES.values():
         tum_sakatliklar.update(takim_sakatliklari_al(lig_kod))
@@ -771,23 +696,14 @@ def analiz_yap(cid):
     for idx, m in enumerate(secilenler, 1):
         print(f"[{idx}/{len(secilenler)}] {m['ev']} vs {m['dep']}", flush=True)
         lig_kod = ESPN_LEAGUES[m["lig"]]
-
-        # H2H
         h2h_data = espn_get(f"{ESPN_WEB_BASE}/{lig_kod}/summary", {"event": m["event_id"]})
         h2h_verisi = h2h_data.get("headToHeadGames", []) if h2h_data else []
-
-        # Stats (cached)
         ev_stats = takim_sezon_istatistik_al(lig_kod, m["ev_id"])
         dep_stats = takim_sezon_istatistik_al(lig_kod, m["dep_id"])
-
-        # Schedule tek cagri (cached)
         ev_sch = takim_schedule_al(lig_kod, m["ev_id"])
         dep_sch = takim_schedule_al(lig_kod, m["dep_id"])
-
         ev_form, ev_b2b = form_ve_b2b(ev_sch, m["tarih"], 5)
         dep_form, dep_b2b = form_ve_b2b(dep_sch, m["tarih"], 5)
-
-        # Ev/Deplasman (cached)
         ev_ev_perf = ev_deplasman_performans(lig_kod, m["ev_id"], ev_mi=True)
         dep_dep_perf = ev_deplasman_performans(lig_kod, m["dep_id"], ev_mi=False)
 
@@ -798,7 +714,6 @@ def analiz_yap(cid):
         tercih = analiz.get("tercih", "")
         if "ALT" not in tercih.upper(): continue
         if analiz.get("olasilik", 0) < 55: continue
-
         adaylar.append({"mac": m, "analiz": analiz})
         print(f"   ✅ ADAY: {tercih} | %{analiz['olasilik']}", flush=True)
 
@@ -811,6 +726,11 @@ def analiz_yap(cid):
     m = en_iyi["mac"]
     a = en_iyi["analiz"]
 
+    orijinal_tercih = a["tercih"]
+    emniyetli_tercih = emniyet_marji_uygula(orijinal_tercih, EMNIYET_MARJI)
+    a["tercih"] = emniyetli_tercih
+    print(f"Tercih: {orijinal_tercih} -> {emniyetli_tercih} (+{EMNIYET_MARJI})", flush=True)
+
     t = []
     t.append("🏀 BASKETBOL ALT KUPONU")
     t.append(f"⏰ {m['tarih'][:16].replace('T', ' ')}")
@@ -820,43 +740,33 @@ def analiz_yap(cid):
     t.append(f"⚡ {m['ev']} - {m['dep']}")
     t.append(f"📊 Kayıt: {m['ev_kayit']} vs {m['dep_kayit']}")
     t.append("")
-    t.append(f"🎯 Tercih: *{a['tercih']}*")
+    t.append(f"🎯 Tercih: *{emniyetli_tercih}*")
     t.append(f"📊 Olasılık: %{a['olasilik']}")
     t.append(f"✅ Uyan şart: {a.get('uyan_sart', '?')}/7")
+    t.append(f"🛡️ Emniyet marjı: +{EMNIYET_MARJI} sayı")
     t.append("")
     t.append(f"📝 {a.get('gerekce', '')}")
     t.append("")
     t.append("━━━━━━━━━━━━━━━━━━")
-    t.append(f"📋 {len(adaylar)} maç ALT şartını geçti")
-    t.append(f"🤖 Maç bitince OTOMATIK sonuclanacak")
+    t.append(f"🤖 Maç bitince OTOMATIK sonuçlanacak")
     t.append("")
     t.append("⚠️ Yatırım tavsiyesi değildir.")
 
     metin = "\n".join(t)
-    aid = save_analiz(cid, f"{m['ev']} - {m['dep']}", m["event_id"], m["lig"], a["tercih"], a["olasilik"])
-
-    rm = None
-    if aid:
-        rm = {"inline_keyboard": [[
-            {"text": "✅ Tuttu", "callback_data": f"sonuc:tuttu:{aid}"},
-            {"text": "❌ Tutmadı", "callback_data": f"sonuc:tutmadi:{aid}"}
-        ]]}
-    send_msg(cid, metin, "Markdown", rm)
+    aid = save_analiz(cid, f"{m['ev']} - {m['dep']}", m["event_id"], m["lig"], emniyetli_tercih, a["olasilik"])
+    send_msg(cid, metin, "Markdown")
 
 # ==========================================
 # DEBUG
 # ==========================================
 def debug_basket(cid):
     tr_now = datetime.now(timezone.utc) + timedelta(hours=3)
-    lines = ["🔧 *DEBUG RAPORU*", "", f"TR: `{tr_now.strftime('%d.%m.%Y %H:%M')}`", ""]
-
+    lines = ["🔧 *DEBUG*", "", f"TR: `{tr_now.strftime('%d.%m.%Y %H:%M')}`", ""]
     sakatliklar = takim_sakatliklari_al("nba")
     lines.append(f"✅ NBA sakatlık: *{len(sakatliklar)}* takım")
-
     maclar = bugunun_maclari_al()
     lines.append(f"🏀 Yaklaşan maç: *{len(maclar)}*")
     send_msg(cid, "\n".join(lines), "Markdown")
-
     if maclar:
         m = maclar[0]
         lig_kod = ESPN_LEAGUES[m["lig"]]
@@ -869,7 +779,6 @@ def debug_basket(cid):
         sch = takim_schedule_al(lig_kod, m["ev_id"])
         form, b2b = form_ve_b2b(sch, m["tarih"], 3)
         lines2.append(f"• Dinlenme: {b2b} gün")
-        lines2.append(f"• Son {len(form)} maç:")
         for f in form:
             lines2.append(f"  - {f['tarih']}: TOP {f['toplam']}")
         send_msg(cid, "\n".join(lines2), "Markdown")
@@ -889,11 +798,11 @@ def _menu_keyboard():
     ]}
 
 def _menu_text():
-    return ("🏀 *ABD BASKETBOL ALT BOTU v8.1*\n\n"
+    return ("🏀 *ABD BASKETBOL ALT BOTU v10*\n\n"
             "🎯 Sadece ALT (under)\n"
+            "🛡️ +10 sayı emniyet marjı\n"
             "📊 PPG + PAPG + Pace + Form + B2B\n"
-            "🔍 Sakatlık + H2H + Ev/Deplasman\n"
-            "🤖 Otomatik sonuç kontrolü\n\n"
+            "🤖 Otomatik sonuç (2 dk kontrol)\n\n"
             "⬇️ Analiz için butona bas:")
 
 def show_menu(cid, mid=None):
@@ -914,16 +823,11 @@ def show_gecmis(cid, mid=None):
     else: send_msg(cid, text, None, _ana_menu_buton())
 
 def show_yardim(cid, mid=None):
-    text = ("❓ YARDIM - v8.1\n\n"
+    text = ("❓ YARDIM - v10\n\n"
             "🏀 Yaklaşan ABD basketbol maçları\n"
-            "🎯 Sadece ALT bahisleri\n\n"
-            "📊 Veriler:\n"
-            "• PPG / PAPG / Pace\n"
-            "• Son 5 maç form\n"
-            "• Back-to-back durumu\n"
-            "• Ev/deplasman performansı\n"
-            "• Sakatlıklar ve H2H\n\n"
-            "🤖 Maç bitince otomatik sonuç\n\n"
+            "🎯 Sadece ALT bahisleri\n"
+            "🛡️ +10 emniyet marjı\n"
+            "🤖 Maç bitince otomatik sonuç (2 dk)\n\n"
             "⚠️ Yatırım tavsiyesi değildir.")
     if mid: edit_message_text(cid, mid, text, None, _ana_menu_buton())
     else: send_msg(cid, text, None, _ana_menu_buton())
@@ -962,21 +866,9 @@ def handle_callback(cq):
             threading.Thread(target=debug_basket, args=(cid,), daemon=True).start(); return
         if data == "menu:analiz":
             if not check_rate_limit(cid): return
-            edit_reply_markup(cid, mid, _ana_menu_buton())
+            edit_message_text(cid, mid, "⏳ Analiz başlatılıyor...", None)
             threading.Thread(target=analiz_yap, args=(cid,), daemon=True).start()
             return
-        if data.startswith("sonuc:"):
-            _, sonuc, aid_str = data.split(":")
-            try:
-                with _DB_LOCK:
-                    conn = db_conn()
-                    conn.execute("UPDATE analizler SET sonuc=?, kontrol_edildi=1 WHERE id=? AND sonuc IS NULL", (sonuc, int(aid_str)))
-                    conn.commit(); conn.close()
-                edit_reply_markup(cid, mid, None)
-                e = "✅" if sonuc == "tuttu" else "❌"
-                send_msg(cid, f"{e} Analiz #{aid_str} manuel kaydedildi.")
-            except Exception as e:
-                print(f"sonuc hata: {e}", flush=True)
     except Exception as e:
         print(f"callback: {e}", flush=True)
 
@@ -987,7 +879,7 @@ def main():
     threading.Thread(target=run_health_server, daemon=True).start()
     init_db()
     threading.Thread(target=sonuc_kontrol_worker, daemon=True).start()
-    print("=== ABD BASKETBOL ALT BOTU v8.1 BASLADI ===", flush=True)
+    print("=== ABD BASKETBOL ALT BOTU v10 BASLADI ===", flush=True)
     offset = get_offset()
     while True:
         try:
